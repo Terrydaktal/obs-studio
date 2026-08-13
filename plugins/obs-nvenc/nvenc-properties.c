@@ -1,5 +1,7 @@
 #include "nvenc-internal.h"
 
+#include <stdio.h>
+
 void nvenc_properties_read(struct nvenc_properties *props, obs_data_t *settings)
 {
 	props->bitrate = obs_data_get_int(settings, "bitrate");
@@ -202,8 +204,16 @@ obs_properties_t *nvenc_properties_internal(enum codec_type codec)
 	p = obs_properties_add_bool(props, "adaptive_quantization", obs_module_text("AdaptiveQuantization"));
 	obs_property_set_long_description(p, obs_module_text("AdaptiveQuantization.ToolTip"));
 
-	if (num_encoder_devices() > 1) {
-		obs_properties_add_int(props, "device", obs_module_text("GPU"), -1, num_encoder_devices(), 1);
+	/* Keep GPU selection available even on a single-GPU system.  This makes
+	 * the encoder's device choice explicit and lets profiles retain either
+	 * OBS's automatic device or a numbered CUDA device. */
+	p = obs_properties_add_list(props, "device", obs_module_text("GPU"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("GPU.Auto"), -1);
+	for (int device = 0; device < num_encoder_devices(); device++) {
+		char device_name[32];
+		snprintf(device_name, sizeof(device_name), "GPU %d", device);
+		obs_property_list_add_int(p, device_name, device);
 	}
 
 	if (caps->bframes > 0) {

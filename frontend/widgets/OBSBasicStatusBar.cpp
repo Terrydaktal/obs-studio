@@ -1,6 +1,7 @@
 #include "OBSBasicStatusBar.hpp"
 #include "ui_StatusBarWidget.h"
 
+#include <utility/SimpleOutput.hpp>
 #include <widgets/OBSBasic.hpp>
 
 #include "moc_OBSBasicStatusBar.cpp"
@@ -221,6 +222,77 @@ void OBSBasicStatusBar::UpdateCPUUsage()
 	statusWidget->ui->cpuUsage->setMinimumWidth(statusWidget->ui->cpuUsage->width());
 
 	UpdateCurrentFPS();
+	UpdateRecordingEncoder();
+}
+
+void OBSBasicStatusBar::UpdateRecordingEncoder()
+{
+	OBSBasic *main = qobject_cast<OBSBasic *>(parent());
+	if (!main || !main->loaded) {
+		return;
+	}
+
+	const char *encoderId = nullptr;
+	OBSOutput output = OBSGetStrongRef(recordOutput);
+	obs_encoder_t *activeEncoder = output ? obs_output_get_video_encoder(output) : nullptr;
+	if (activeEncoder) {
+		encoderId = obs_encoder_get_id(activeEncoder);
+	}
+
+	QString description;
+	if (!encoderId) {
+		const char *mode = config_get_string(main->Config(), "Output", "Mode");
+		if (mode && strcmp(mode, "Simple") == 0) {
+			const char *quality = config_get_string(main->Config(), "SimpleOutput", "RecQuality");
+			const bool sameAsStream = quality && strcmp(quality, "Stream") == 0;
+			const char *configured = config_get_string(
+				main->Config(), "SimpleOutput", sameAsStream ? "StreamEncoder" : "RecEncoder");
+			if (configured) {
+				encoderId = get_simple_output_encoder(configured);
+			}
+		} else {
+			const char *recordType = config_get_string(main->Config(), "AdvOut", "RecType");
+			if (recordType && strcmp(recordType, "FFmpeg") == 0) {
+				const char *ffmpegEncoder = config_get_string(main->Config(), "AdvOut", "FFVEncoder");
+				description = ffmpegEncoder && *ffmpegEncoder ? QStringLiteral("FFmpeg %1").arg(ffmpegEncoder)
+									       : QStringLiteral("FFmpeg custom");
+			} else {
+				encoderId = config_get_string(main->Config(), "AdvOut", "RecEncoder");
+				if (!encoderId || strcmp(encoderId, "none") == 0) {
+					encoderId = config_get_string(main->Config(), "AdvOut", "Encoder");
+				}
+			}
+		}
+	}
+
+	if (description.isEmpty() && encoderId) {
+		if (strcmp(encoderId, "ffmpeg_svt_av1") == 0) {
+			int preset = 5;
+			if (activeEncoder) {
+				OBSDataAutoRelease settings = obs_encoder_get_settings(activeEncoder);
+				preset = int(obs_data_get_int(settings, "preset"));
+			}
+			description = QStringLiteral("SVT-AV1 CPU P%1").arg(preset);
+		} else if (strcmp(encoderId, "obs_nvenc_av1_tex") == 0) {
+			description = QStringLiteral("NVENC AV1");
+		} else if (strcmp(encoderId, "obs_nvenc_h264_tex") == 0 || strcmp(encoderId, "ffmpeg_nvenc") == 0) {
+			description = QStringLiteral("NVENC H.264");
+		} else if (strcmp(encoderId, "obs_nvenc_hevc_tex") == 0 ||
+			   strcmp(encoderId, "ffmpeg_hevc_nvenc") == 0) {
+			description = QStringLiteral("NVENC HEVC");
+		} else if (strcmp(encoderId, "obs_x264") == 0) {
+			description = QStringLiteral("x264 CPU");
+		} else {
+			const char *displayName = obs_encoder_get_display_name(encoderId);
+			description = displayName ? QString::fromUtf8(displayName) : QString::fromUtf8(encoderId);
+		}
+	}
+
+	if (description.isEmpty()) {
+		description = QStringLiteral("—");
+	}
+	statusWidget->ui->recordingEncoder->setText(QTStr("Basic.StatusBar.RecordingEncoder").arg(description));
+	statusWidget->ui->recordingEncoder->setMinimumWidth(statusWidget->ui->recordingEncoder->width());
 }
 
 void OBSBasicStatusBar::UpdateCurrentFPS()
@@ -541,12 +613,14 @@ void OBSBasicStatusBar::StreamStopped()
 void OBSBasicStatusBar::RecordingStarted(obs_output_t *output)
 {
 	recordOutput = OBSGetWeakRef(output);
+	UpdateRecordingEncoder();
 	Activate();
 }
 
 void OBSBasicStatusBar::RecordingStopped()
 {
 	recordOutput = nullptr;
+	UpdateRecordingEncoder();
 	Deactivate();
 }
 

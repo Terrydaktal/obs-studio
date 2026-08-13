@@ -56,6 +56,8 @@ extern bool restart;
 extern bool opt_allow_opengl;
 extern bool cef_js_avail;
 
+bool EncoderAvailable(const char *encoder);
+
 static inline bool ResTooHigh(uint32_t cx, uint32_t cy)
 {
 	return cx > 16384 || cy > 16384;
@@ -432,6 +434,8 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 	HookWidget(ui->simpleOutCustom,      EDIT_CHANGED,   OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutRecQuality,  COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutRecEncoder,  COMBO_CHANGED,  OUTPUTS_CHANGED);
+	HookWidget(ui->simpleOutRecNVENCProfile, COMBO_CHANGED, OUTPUTS_CHANGED);
+	HookWidget(ui->simpleOutRecNVENCGPU, COMBO_CHANGED, OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutRecAEncoder, COMBO_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutRecTrack1,   CHECK_CHANGED,  OUTPUTS_CHANGED);
 	HookWidget(ui->simpleOutRecTrack2,   CHECK_CHANGED,  OUTPUTS_CHANGED);
@@ -763,6 +767,11 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 		&OBSBasicSettings::SimpleRecordingEncoderChanged);
 	connect(ui->simpleOutRecEncoder, &QComboBox::currentIndexChanged, this,
 		&OBSBasicSettings::SimpleRecordingEncoderChanged);
+	connect(ui->simpleOutRecNVENCProfile, &QComboBox::currentIndexChanged, this,
+		&OBSBasicSettings::SimpleRecordingEncoderChanged);
+	connect(ui->simpleOutRecNVENCProfile, &QComboBox::currentIndexChanged, this, [this](int) {
+		ApplySimpleRecordingPreset();
+	});
 	connect(ui->simpleOutRecAEncoder, &QComboBox::currentIndexChanged, this,
 		&OBSBasicSettings::SimpleRecordingEncoderChanged);
 	connect(ui->simpleOutputVBitrate, &QSpinBox::valueChanged, this,
@@ -1768,6 +1777,8 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 	const char *custom = config_get_string(main->Config(), "SimpleOutput", "x264Settings");
 	const char *recQual = config_get_string(main->Config(), "SimpleOutput", "RecQuality");
 	const char *recEnc = config_get_string(main->Config(), "SimpleOutput", "RecEncoder");
+	const char *recNvencProfile = config_get_string(main->Config(), "SimpleOutput", "RecNVENCProfile");
+	int recNvencGPU = config_get_int(main->Config(), "SimpleOutput", "RecNVENCGPU");
 	const char *recAudioEnc = config_get_string(main->Config(), "SimpleOutput", "RecAudioEncoder");
 	const char *muxCustom = config_get_string(main->Config(), "SimpleOutput", "MuxerCustom");
 	bool replayBuf = config_get_bool(main->Config(), "SimpleOutput", "RecRB");
@@ -1834,6 +1845,18 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 	idx = ui->simpleOutRecEncoder->findData(QString(recEnc));
 	ui->simpleOutRecEncoder->setCurrentIndex(idx);
 
+	idx = ui->simpleOutRecNVENCProfile->findData(QString(recNvencProfile));
+	if (idx == -1) {
+		idx = ui->simpleOutRecNVENCProfile->findData(QStringLiteral("efficiency"));
+	}
+	ui->simpleOutRecNVENCProfile->setCurrentIndex(idx);
+
+	idx = ui->simpleOutRecNVENCGPU->findData(recNvencGPU);
+	if (idx == -1) {
+		idx = ui->simpleOutRecNVENCGPU->findData(-1);
+	}
+	ui->simpleOutRecNVENCGPU->setCurrentIndex(idx);
+
 	idx = ui->simpleOutRecAEncoder->findData(QString(recAudioEnc));
 	ui->simpleOutRecAEncoder->setCurrentIndex(idx);
 
@@ -1843,6 +1866,7 @@ void OBSBasicSettings::LoadSimpleOutputSettings()
 	ui->simpleRBSecMax->setValue(rbTime);
 	ui->simpleRBMegsMax->setValue(rbSize);
 
+	ApplySimpleRecordingPreset();
 	SimpleStreamingEncoderChanged();
 }
 
@@ -3473,6 +3497,17 @@ void OBSBasicSettings::SaveOutputSettings()
 {
 	config_set_string(main->Config(), "Output", "Mode", OutputModeFromIdx(ui->outputMode->currentIndex()));
 
+	/* Recording presets own all of the recording fields they expose.  Do not
+	 * rely on WidgetChanged() here: applying a preset while the settings page
+	 * loads changes the combo boxes programmatically, and those changes are
+	 * deliberately not marked as user edits. */
+	ApplySimpleRecordingPreset();
+	const QString recordingPreset = GetComboData(ui->simpleOutRecNVENCProfile);
+	const bool managedRecordingPreset =
+		(recordingPreset == "efficiency" &&
+		 (EncoderAvailable("ffmpeg_svt_av1") || EncoderAvailable("obs_nvenc_av1_tex"))) ||
+		(recordingPreset == "h264_size" && EncoderAvailable("obs_nvenc_av1_tex"));
+
 	QString encoder = ui->simpleOutStrEncoder->currentData().toString();
 	const char *presetType;
 
@@ -3515,13 +3550,27 @@ void OBSBasicSettings::SaveOutputSettings()
 	SaveCombo(ui->simpleOutputABitrate, "SimpleOutput", "ABitrate");
 	SaveEdit(ui->simpleOutputPath, "SimpleOutput", "FilePath");
 	SaveCheckBox(ui->simpleNoSpace, "SimpleOutput", "FileNameWithoutSpace");
-	SaveComboData(ui->simpleOutRecFormat, "SimpleOutput", "RecFormat2");
 	SaveCheckBox(ui->simpleOutAdvanced, "SimpleOutput", "UseAdvanced");
 	SaveComboData(ui->simpleOutPreset, "SimpleOutput", presetType);
 	SaveEdit(ui->simpleOutCustom, "SimpleOutput", "x264Settings");
-	SaveComboData(ui->simpleOutRecQuality, "SimpleOutput", "RecQuality");
-	SaveComboData(ui->simpleOutRecEncoder, "SimpleOutput", "RecEncoder");
-	SaveComboData(ui->simpleOutRecAEncoder, "SimpleOutput", "RecAudioEncoder");
+	if (managedRecordingPreset) {
+		const char *quality = recordingPreset == "h264_size" ? "HQ" : "Small";
+		const bool useSvt = recordingPreset == "efficiency" && EncoderAvailable("ffmpeg_svt_av1");
+		config_set_string(main->Config(), "SimpleOutput", "RecNVENCProfile", QT_TO_UTF8(recordingPreset));
+		config_set_string(main->Config(), "SimpleOutput", "RecEncoder",
+				  useSvt ? SIMPLE_ENCODER_SVT_AV1 : SIMPLE_ENCODER_NVENC_AV1);
+		config_set_string(main->Config(), "SimpleOutput", "RecQuality", quality);
+		config_set_string(main->Config(), "SimpleOutput", "RecFormat2", "hybrid_mp4");
+		config_set_string(main->Config(), "SimpleOutput", "RecAudioEncoder", "aac");
+	} else {
+		SaveComboData(ui->simpleOutRecFormat, "SimpleOutput", "RecFormat2");
+		SaveComboData(ui->simpleOutRecQuality, "SimpleOutput", "RecQuality");
+		SaveComboData(ui->simpleOutRecEncoder, "SimpleOutput", "RecEncoder");
+		SaveComboData(ui->simpleOutRecNVENCProfile, "SimpleOutput", "RecNVENCProfile");
+		SaveComboData(ui->simpleOutRecAEncoder, "SimpleOutput", "RecAudioEncoder");
+	}
+	config_set_int(main->Config(), "SimpleOutput", "RecNVENCGPU",
+		       ui->simpleOutRecNVENCGPU->currentData().toInt());
 	SaveEdit(ui->simpleOutMuxCustom, "SimpleOutput", "MuxerCustom");
 	SaveGroupBox(ui->simpleReplayBuf, "SimpleOutput", "RecRB");
 	SaveSpinBox(ui->simpleRBSecMax, "SimpleOutput", "RecRBTime");
@@ -4955,6 +5004,24 @@ void OBSBasicSettings::FillSimpleRecordingValues()
 	ADD_QUALITY("HQ");
 	ADD_QUALITY("Lossless");
 
+	ui->simpleOutRecNVENCProfile->addItem(
+		QTStr("Basic.Settings.Output.Simple.RecordingPreset.Small"), "efficiency");
+	ui->simpleOutRecNVENCProfile->addItem(
+		QTStr("Basic.Settings.Output.Simple.RecordingPreset.H264Size"), "h264_size");
+	if (EncoderAvailable("ffmpeg_svt_av1")) {
+		ui->simpleOutRecEncoder->addItem(ENCODER_STR("Software.SVT.AV1"), QString(SIMPLE_ENCODER_SVT_AV1));
+	}
+
+	OBSProperties nvencProperties = obs_get_encoder_properties("obs_nvenc_av1_tex");
+	obs_property_t *gpuProperty = nvencProperties ? obs_properties_get(nvencProperties, "device") : nullptr;
+	if (gpuProperty) {
+		size_t gpuCount = obs_property_list_item_count(gpuProperty);
+		for (size_t i = 0; i < gpuCount; i++) {
+			ui->simpleOutRecNVENCGPU->addItem(QT_UTF8(obs_property_list_item_name(gpuProperty, i)),
+							  (int)obs_property_list_item_int(gpuProperty, i));
+		}
+	}
+
 	ui->simpleOutRecEncoder->addItem(ENCODER_STR("Software"), QString(SIMPLE_ENCODER_X264));
 	ui->simpleOutRecEncoder->addItem(ENCODER_STR("SoftwareLowCPU"), QString(SIMPLE_ENCODER_X264_LOWCPU));
 	if (EncoderAvailable("obs_qsv11")) {
@@ -5029,6 +5096,45 @@ void OBSBasicSettings::FillAudioMonitoringDevices()
 	obs_enum_audio_monitoring_devices(enum_devices, cb);
 }
 
+void OBSBasicSettings::ApplySimpleRecordingPreset()
+{
+	const QString preset = ui->simpleOutRecNVENCProfile->currentData().toString();
+	const bool useSvt = preset == "efficiency" && EncoderAvailable("ffmpeg_svt_av1");
+	const bool managedPreset = useSvt ||
+		(preset == "h264_size" && EncoderAvailable("obs_nvenc_av1_tex")) ||
+		(preset == "efficiency" && EncoderAvailable("obs_nvenc_av1_tex"));
+
+	ui->simpleOutRecEncoder->setEnabled(!managedPreset);
+	ui->simpleOutRecQuality->setEnabled(!managedPreset);
+	ui->simpleOutRecFormat->setEnabled(!managedPreset);
+	ui->simpleOutRecAEncoder->setEnabled(!managedPreset);
+	ui->simpleOutRecNVENCGPU->setEnabled(!managedPreset || !useSvt);
+
+	if (!managedPreset)
+		return;
+
+	/* A recording preset owns the recording codec and its visible quality,
+	 * format, and audio selections.  Applying it must therefore be enough to
+	 * switch an existing H.264/HEVC setup to the AV1 NVENC configuration. */
+	const QString encoder = useSvt ? QString(SIMPLE_ENCODER_SVT_AV1) : QString(SIMPLE_ENCODER_NVENC_AV1);
+	int index = ui->simpleOutRecEncoder->findData(encoder);
+	if (index != -1)
+		ui->simpleOutRecEncoder->setCurrentIndex(index);
+
+	const QString quality = preset == "h264_size" ? QStringLiteral("HQ") : QStringLiteral("Small");
+	index = ui->simpleOutRecQuality->findData(quality);
+	if (index != -1)
+		ui->simpleOutRecQuality->setCurrentIndex(index);
+
+	index = ui->simpleOutRecFormat->findData(QStringLiteral("hybrid_mp4"));
+	if (index != -1)
+		ui->simpleOutRecFormat->setCurrentIndex(index);
+
+	index = ui->simpleOutRecAEncoder->findData(QStringLiteral("aac"));
+	if (index != -1)
+		ui->simpleOutRecAEncoder->setCurrentIndex(index);
+}
+
 void OBSBasicSettings::SimpleRecordingQualityChanged()
 {
 	QString qual = ui->simpleOutRecQuality->currentData().toString();
@@ -5040,6 +5146,10 @@ void OBSBasicSettings::SimpleRecordingQualityChanged()
 	ui->simpleOutRecEncoderLabel->setVisible(showEncoder);
 	ui->simpleOutRecAEncoder->setVisible(showEncoder);
 	ui->simpleOutRecAEncoderLabel->setVisible(showEncoder);
+	ui->simpleOutRecNVENCProfile->setVisible(true);
+	ui->simpleOutRecNVENCProfileLabel->setVisible(true);
+	ui->simpleOutRecNVENCGPU->setVisible(true);
+	ui->simpleOutRecNVENCGPULabel->setVisible(true);
 	ui->simpleOutRecFormat->setVisible(!losslessQuality);
 	ui->simpleOutRecFormatLabel->setVisible(!losslessQuality);
 
@@ -5420,6 +5530,10 @@ static void DisableIncompatibleSimpleContainer(QComboBox *cbox, const QString &c
 void OBSBasicSettings::SimpleRecordingEncoderChanged()
 {
 	QString qual = ui->simpleOutRecQuality->currentData().toString();
+	ui->simpleOutRecNVENCProfile->setVisible(true);
+	ui->simpleOutRecNVENCProfileLabel->setVisible(true);
+	ui->simpleOutRecNVENCGPU->setVisible(true);
+	ui->simpleOutRecNVENCGPULabel->setVisible(true);
 	QString warning;
 	bool enforceBitrate = !ui->ignoreRecommended->isChecked();
 	OBSService service = GetStream1Service();

@@ -70,6 +70,8 @@ static bool av1_update(struct av1_encoder *enc, obs_data_t *settings)
 	int cqp = (int)obs_data_get_int(settings, "cqp");
 	int keyint_sec = (int)obs_data_get_int(settings, "keyint_sec");
 	int preset = (int)obs_data_get_int(settings, "preset");
+	int tune = (int)obs_data_get_int(settings, "tune");
+	int lp = (int)obs_data_get_int(settings, "lp");
 	AVDictionary *svtav1_opts = NULL;
 
 	video_t *video = obs_encoder_video(enc->ffve.encoder);
@@ -87,6 +89,9 @@ static bool av1_update(struct av1_encoder *enc, obs_data_t *settings)
 	if (enc->type == AV1_ENCODER_TYPE_SVT) {
 		av_opt_set_int(enc->ffve.context->priv_data, "preset", preset, 0);
 		av_dict_set_int(&svtav1_opts, "rc", 1, 0);
+		av_dict_set_int(&svtav1_opts, "tune", tune, 0);
+		if (lp > 0)
+			av_dict_set_int(&svtav1_opts, "lp", lp, 0);
 	} else if (enc->type == AV1_ENCODER_TYPE_AOM) {
 		av_opt_set_int(enc->ffve.context->priv_data, "cpu-used", preset, 0);
 		av_opt_set(enc->ffve.context->priv_data, "usage", "realtime", 0);
@@ -108,6 +113,10 @@ static bool av1_update(struct av1_encoder *enc, obs_data_t *settings)
 			av_dict_set_int(&svtav1_opts, "rc", 0, 0);
 			av_opt_set_int(enc->ffve.context->priv_data, "qp", cqp, 0);
 		}
+
+	} else if (astrcmpi(rc, "crf") == 0) {
+		bitrate = 0;
+		av_opt_set_int(enc->ffve.context->priv_data, "crf", cqp, 0);
 
 	} else if (astrcmpi(rc, "vbr") != 0) { /* CBR by default */
 		const int64_t rate = bitrate * INT64_C(1000);
@@ -139,11 +148,13 @@ static bool av1_update(struct av1_encoder *enc, obs_data_t *settings)
 	     "\tcqp:          %d\n"
 	     "\tkeyint:       %d\n"
 	     "\tpreset:       %d\n"
+	     "\ttune:         %d\n"
+	     "\tlp:           %d\n"
 	     "\twidth:        %d\n"
 	     "\theight:       %d\n"
 	     "\tffmpeg opts:  %s\n",
-	     enc->ffve.enc_name, rc, bitrate, cqp, enc->ffve.context->gop_size, preset, enc->ffve.context->width,
-	     enc->ffve.height, ffmpeg_opts);
+	     enc->ffve.enc_name, rc, bitrate, cqp, enc->ffve.context->gop_size, preset, tune, lp,
+	     enc->ffve.context->width, enc->ffve.height, ffmpeg_opts);
 
 	enc->ffve.context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 	return ffmpeg_video_encoder_init_codec(&enc->ffve);
@@ -234,20 +245,23 @@ void av1_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "cqp", 50);
 	obs_data_set_default_string(settings, "rate_control", "CBR");
 	obs_data_set_default_int(settings, "preset", 8);
+	obs_data_set_default_int(settings, "tune", 1);
+	obs_data_set_default_int(settings, "lp", 0);
 }
 
 static bool rate_control_modified(obs_properties_t *ppts, obs_property_t *p, obs_data_t *settings)
 {
 	const char *rc = obs_data_get_string(settings, "rate_control");
 	bool cqp = astrcmpi(rc, "CQP") == 0;
+	bool crf = astrcmpi(rc, "CRF") == 0;
 	bool vbr = astrcmpi(rc, "VBR") == 0;
 
 	p = obs_properties_get(ppts, "bitrate");
-	obs_property_set_visible(p, !cqp);
+	obs_property_set_visible(p, !cqp && !crf);
 	p = obs_properties_get(ppts, "max_bitrate");
 	obs_property_set_visible(p, vbr);
 	p = obs_properties_get(ppts, "cqp");
-	obs_property_set_visible(p, cqp);
+	obs_property_set_visible(p, cqp || crf);
 
 	return true;
 }
@@ -261,6 +275,7 @@ obs_properties_t *av1_properties(enum av1_encoder_type type)
 				    OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(p, "CBR", "CBR");
 	obs_property_list_add_string(p, "CQP", "CQP");
+	obs_property_list_add_string(p, "CRF", "CRF");
 	obs_property_list_add_string(p, "VBR", "VBR");
 
 	obs_property_set_modified_callback(p, rate_control_modified);
@@ -277,6 +292,7 @@ obs_properties_t *av1_properties(enum av1_encoder_type type)
 				    OBS_COMBO_FORMAT_INT);
 
 	if (type == AV1_ENCODER_TYPE_SVT) {
+		obs_property_list_add_int(p, "Best real-time efficiency (5)", 5);
 		obs_property_list_add_int(p, "Very likely too slow (6)", 6);
 		obs_property_list_add_int(p, "Probably too slow (7)", 7);
 		obs_property_list_add_int(p, "Seems okay (8)", 8);

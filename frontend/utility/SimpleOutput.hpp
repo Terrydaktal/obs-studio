@@ -2,6 +2,8 @@
 
 #include "BasicOutputHandler.hpp"
 
+const char *get_simple_output_encoder(const char *encoder);
+
 struct SimpleOutput : BasicOutputHandler {
 	OBSEncoder audioStreaming;
 	OBSEncoder videoStreaming;
@@ -25,6 +27,8 @@ struct SimpleOutput : BasicOutputHandler {
 	void UpdateRecordingSettings_qsv11(int crf, bool av1);
 	void UpdateRecordingSettings_nvenc(int cqp);
 	void UpdateRecordingSettings_nvenc_hevc_av1(int cqp);
+	void UpdateRecordingSettings_nvenc_av1(int cqp);
+	void UpdateRecordingSettings_svt_av1();
 	void UpdateRecordingSettings_amd_cqp(int cqp);
 	void UpdateRecordingSettings_apple(int quality);
 #ifdef ENABLE_HEVC

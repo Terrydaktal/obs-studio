@@ -8,6 +8,20 @@
 
 using namespace std;
 
+/* The stock zero value becomes a 250-frame GOP (8.33 seconds at 30 FPS).
+ * A detailed 4K desktop I-frame can exceed 1 MiB, so that streaming-oriented
+ * default wastes most of a short recording on redundant keyframes.  One
+ * minute keeps recordings reasonably seekable while removing that waste. */
+static constexpr int AV1_RECORDING_KEYFRAME_INTERVAL_SEC = 60;
+/* Match the old automatic-lookahead CRF 50 quality after bounding lookahead. */
+static constexpr int SVT_AV1_RECORDING_CRF = 45;
+/* SVT's automatic lookahead can buffer roughly four seconds of 30 FPS
+ * video before the random-access mini-GOP delay is counted.  OBS measures
+ * that intentional delay as encoder backlog and aborts at five seconds.
+ * Sixteen frames preserves nearly all of preset 5's compression while
+ * keeping the total pipeline comfortably below the timeout. */
+static constexpr const char *SVT_AV1_RECORDING_OPTIONS = "svtav1-params=tune=0:lp=6:lookahead=16";
+
 static bool CreateSimpleAACEncoder(OBSEncoder &res, int bitrate, const char *name, size_t idx)
 {
 	const char *id_ = GetSimpleAACEncoderForBitrate(bitrate);
@@ -64,7 +78,64 @@ void SimpleOutput::LoadRecordingPreset_Lossless()
 
 void SimpleOutput::LoadRecordingPreset_Lossy(const char *encoderId)
 {
-	videoRecording = obs_video_encoder_create(encoderId, "simple_video_recording", nullptr, nullptr);
+	OBSDataAutoRelease settings = nullptr;
+	const char *profile = config_get_string(main->Config(), "SimpleOutput", "RecNVENCProfile");
+
+	/* Build the selected AV1 profile into the initial settings.  This is
+	 * required for both NVENC and SVT because their encoder-specific options
+	 * are applied when the encoder is initialized. */
+	if (strcmp(encoderId, "obs_nvenc_av1_tex") == 0) {
+		settings = obs_data_create();
+		const bool h264_size = profile && strcmp(profile, "h264_size") == 0;
+		const int cqp = CalcCRF(videoQuality == "HQ" ? 16 : 23);
+		const int bitrate = (int)config_get_uint(main->Config(), "SimpleOutput", "VBitrate");
+		const int gpu = config_get_int(main->Config(), "SimpleOutput", "RecNVENCGPU");
+		const char *tune = "hq";
+		if (h264_size) {
+			OBSProperties properties = obs_get_encoder_properties(encoderId);
+			obs_property_t *tuning = properties ? obs_properties_get(properties, "tune") : nullptr;
+			if (tuning) {
+				size_t tuningCount = obs_property_list_item_count(tuning);
+				for (size_t i = 0; i < tuningCount; i++) {
+					if (strcmp(obs_property_list_item_string(tuning, i), "uhq") == 0) {
+						tune = "uhq";
+						break;
+					}
+				}
+			}
+		}
+
+		obs_data_set_string(settings, "rate_control", h264_size ? "CBR" : "CQP");
+		obs_data_set_string(settings, "profile", "main");
+		obs_data_set_string(settings, "preset", "p7");
+		obs_data_set_string(settings, "tune", tune);
+		obs_data_set_string(settings, "multipass", "fullres");
+		obs_data_set_int(settings, "keyint_sec", AV1_RECORDING_KEYFRAME_INTERVAL_SEC);
+		obs_data_set_bool(settings, "lookahead", true);
+		obs_data_set_bool(settings, "adaptive_quantization", true);
+		obs_data_set_int(settings, "bf", 2);
+		obs_data_set_string(settings, "opts", "lookaheadDepth=32");
+		if (gpu >= 0)
+			obs_data_set_int(settings, "device", gpu);
+
+		if (h264_size) {
+			obs_data_set_int(settings, "bitrate", bitrate);
+			obs_data_set_int(settings, "max_bitrate", bitrate);
+		} else {
+			obs_data_set_int(settings, "cqp", cqp);
+		}
+	} else if (strcmp(encoderId, "ffmpeg_svt_av1") == 0) {
+		settings = obs_data_create();
+		obs_data_set_string(settings, "rate_control", "CRF");
+		obs_data_set_int(settings, "cqp", SVT_AV1_RECORDING_CRF);
+		obs_data_set_int(settings, "preset", 5);
+		obs_data_set_int(settings, "tune", 0);
+		obs_data_set_int(settings, "lp", 6);
+		obs_data_set_int(settings, "keyint_sec", AV1_RECORDING_KEYFRAME_INTERVAL_SEC);
+		obs_data_set_string(settings, "ffmpeg_opts", SVT_AV1_RECORDING_OPTIONS);
+	}
+
+	videoRecording = obs_video_encoder_create(encoderId, "simple_video_recording", settings, nullptr);
 	if (!videoRecording) {
 		throw "Failed to create video recording encoder (simple output)";
 	}
@@ -114,6 +185,8 @@ const char *get_simple_output_encoder(const char *encoder)
 #endif
 	} else if (strcmp(encoder, SIMPLE_ENCODER_NVENC_AV1) == 0) {
 		return "obs_nvenc_av1_tex";
+	} else if (strcmp(encoder, SIMPLE_ENCODER_SVT_AV1) == 0) {
+		return "ffmpeg_svt_av1";
 	} else if (strcmp(encoder, SIMPLE_ENCODER_APPLE_H264) == 0) {
 		return "com.apple.videotoolbox.videoencoder.ave.avc";
 #ifdef ENABLE_HEVC
@@ -127,6 +200,29 @@ const char *get_simple_output_encoder(const char *encoder)
 
 void SimpleOutput::LoadRecordingPreset()
 {
+	const char *configuredRecordingPreset =
+		config_get_string(main->Config(), "SimpleOutput", "RecNVENCProfile");
+	const string recordingPreset = configuredRecordingPreset ? configuredRecordingPreset : "";
+	const bool svtEfficiency = recordingPreset == "efficiency" && EncoderAvailable("ffmpeg_svt_av1");
+	const bool nvencPreset = recordingPreset == "h264_size" && EncoderAvailable("obs_nvenc_av1_tex");
+	const bool nvencFallback = recordingPreset == "efficiency" && !svtEfficiency && EncoderAvailable("obs_nvenc_av1_tex");
+	const bool managedRecordingPreset = svtEfficiency || nvencPreset || nvencFallback;
+
+	/* The preset is the source of truth at recording time as well as in the
+	 * settings UI.  This is intentionally defensive: older builds could show
+	 * AV1 in the dialog while leaving a stale HEVC RecEncoder value on disk. */
+	if (managedRecordingPreset) {
+		const char *quality = recordingPreset == "h264_size" ? "HQ" : "Small";
+		config_set_string(main->Config(), "SimpleOutput", "RecEncoder",
+				  svtEfficiency ? SIMPLE_ENCODER_SVT_AV1 : SIMPLE_ENCODER_NVENC_AV1);
+		config_set_string(main->Config(), "SimpleOutput", "RecQuality", quality);
+		config_set_string(main->Config(), "SimpleOutput", "RecFormat2", "hybrid_mp4");
+		config_set_string(main->Config(), "SimpleOutput", "RecAudioEncoder", "aac");
+		blog(LOG_INFO,
+		     "Recording preset '%s' enforced: encoder=%s, quality=%s, format=Hybrid MP4, audio=AAC",
+		     recordingPreset.c_str(), svtEfficiency ? "SVT-AV1 CPU preset 5" : "NVENC AV1", quality);
+	}
+
 	const char *quality = config_get_string(main->Config(), "SimpleOutput", "RecQuality");
 	const char *encoder = config_get_string(main->Config(), "SimpleOutput", "RecEncoder");
 	const char *audio_encoder = config_get_string(main->Config(), "SimpleOutput", "RecAudioEncoder");
@@ -499,6 +595,48 @@ void SimpleOutput::UpdateRecordingSettings_nvenc_hevc_av1(int cqp)
 	obs_encoder_update(videoRecording, settings);
 }
 
+void SimpleOutput::UpdateRecordingSettings_nvenc_av1(int cqp)
+{
+	const char *profile = config_get_string(main->Config(), "SimpleOutput", "RecNVENCProfile");
+	const bool h264_size = profile && strcmp(profile, "h264_size") == 0;
+	const int bitrate = (int)config_get_uint(main->Config(), "SimpleOutput", "VBitrate");
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "rate_control", h264_size ? "CBR" : "CQP");
+	obs_data_set_string(settings, "profile", "main");
+	obs_data_set_string(settings, "preset", "p7");
+	obs_data_set_string(settings, "tune", "hq");
+	obs_data_set_string(settings, "multipass", "fullres");
+	obs_data_set_bool(settings, "lookahead", true);
+	obs_data_set_bool(settings, "adaptive_quantization", true);
+	obs_data_set_int(settings, "bf", 2);
+
+	if (h264_size) {
+		/* Match the existing H.264 recording's configured video bitrate while
+		 * retaining AV1's better rate-distortion behaviour and the highest
+		 * quality NVENC preset. */
+		obs_data_set_int(settings, "bitrate", bitrate);
+		obs_data_set_int(settings, "max_bitrate", bitrate);
+	} else {
+		obs_data_set_int(settings, "cqp", cqp);
+	}
+
+	obs_encoder_update(videoRecording, settings);
+}
+
+void SimpleOutput::UpdateRecordingSettings_svt_av1()
+{
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "rate_control", "CRF");
+	obs_data_set_int(settings, "cqp", SVT_AV1_RECORDING_CRF);
+	obs_data_set_int(settings, "preset", 5);
+	obs_data_set_int(settings, "tune", 0);
+	obs_data_set_int(settings, "lp", 6);
+	obs_data_set_int(settings, "keyint_sec", AV1_RECORDING_KEYFRAME_INTERVAL_SEC);
+	obs_data_set_string(settings, "ffmpeg_opts", SVT_AV1_RECORDING_OPTIONS);
+	obs_encoder_update(videoRecording, settings);
+}
+
 void SimpleOutput::UpdateRecordingSettings_apple(int quality)
 {
 	OBSDataAutoRelease settings = obs_data_create();
@@ -563,10 +701,12 @@ void SimpleOutput::UpdateRecordingSettings()
 	} else if (videoEncoder == SIMPLE_ENCODER_NVENC_HEVC) {
 		UpdateRecordingSettings_nvenc_hevc_av1(crf);
 #endif
-	} else if (videoEncoder == SIMPLE_ENCODER_NVENC_AV1) {
-		UpdateRecordingSettings_nvenc_hevc_av1(crf);
+		} else if (videoEncoder == SIMPLE_ENCODER_NVENC_AV1) {
+			UpdateRecordingSettings_nvenc_av1(crf);
+		} else if (videoEncoder == SIMPLE_ENCODER_SVT_AV1) {
+			UpdateRecordingSettings_svt_av1();
 
-	} else if (videoEncoder == SIMPLE_ENCODER_APPLE_H264) {
+		} else if (videoEncoder == SIMPLE_ENCODER_APPLE_H264) {
 		/* These are magic numbers. 0 - 100, more is better. */
 		UpdateRecordingSettings_apple(ultra_hq ? 70 : 50);
 #ifdef ENABLE_HEVC

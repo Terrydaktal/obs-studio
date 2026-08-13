@@ -62,6 +62,7 @@ class VolumeControl;
 class YouTubeAppDock;
 #endif
 class QMessageBox;
+class QItemSelectionModel;
 class QWidgetAction;
 struct QuickTransition;
 
@@ -78,6 +79,7 @@ enum class ItemPasteType { Invalid, Reference, Duplicate, Both };
 #define SIMPLE_ENCODER_QSV_AV1 "qsv_av1"
 #define SIMPLE_ENCODER_NVENC "nvenc"
 #define SIMPLE_ENCODER_NVENC_AV1 "nvenc_av1"
+#define SIMPLE_ENCODER_SVT_AV1 "svt_av1"
 #define SIMPLE_ENCODER_NVENC_HEVC "nvenc_hevc"
 #define SIMPLE_ENCODER_AMD "amd"
 #define SIMPLE_ENCODER_AMD_HEVC "amd_hevc"
@@ -782,6 +784,16 @@ public:
 
 private slots:
 	void ResizeOutputSizeOfSource();
+	void UpdateSourceCanvasResolution();
+
+private:
+	bool ResizeCanvasToSelectedSource(bool confirm);
+	QPointer<QTimer> sourceCanvasResolutionTimer;
+	QPointer<QItemSelectionModel> sourceCanvasSelectionModel;
+	std::string sourceCanvasPendingKey;
+	std::string sourceCanvasAppliedKey;
+	int sourceCanvasStableTicks = 0;
+	bool sourceCanvasResizeInProgress = false;
 
 private slots:
 	void on_actionOpenPluginManager_triggered();

@@ -755,6 +755,8 @@ bool OBSBasic::InitBasicConfigDefaults()
 	config_set_default_string(activeConfiguration, "SimpleOutput", "Preset", "veryfast");
 	config_set_default_string(activeConfiguration, "SimpleOutput", "NVENCPreset2", "p5");
 	config_set_default_string(activeConfiguration, "SimpleOutput", "RecQuality", "Stream");
+	config_set_default_string(activeConfiguration, "SimpleOutput", "RecNVENCProfile", "efficiency");
+	config_set_default_int(activeConfiguration, "SimpleOutput", "RecNVENCGPU", -1);
 	config_set_default_bool(activeConfiguration, "SimpleOutput", "RecRB", false);
 	config_set_default_int(activeConfiguration, "SimpleOutput", "RecRBTime", 20);
 	config_set_default_int(activeConfiguration, "SimpleOutput", "RecRBSize", 512);
@@ -1395,6 +1397,11 @@ void OBSBasic::OnFirstLoad()
 {
 	OnEvent(OBS_FRONTEND_EVENT_FINISHED_LOADING);
 
+	sourceCanvasResolutionTimer = new QTimer(this);
+	connect(sourceCanvasResolutionTimer.data(), &QTimer::timeout, this, &OBSBasic::UpdateSourceCanvasResolution);
+	sourceCanvasResolutionTimer->start(250);
+	UpdateSourceCanvasResolution();
+
 #ifdef WHATSNEW_ENABLED
 	/* Attempt to load init screen if available */
 	if (cef) {
@@ -1419,6 +1426,10 @@ OBSBasic::~OBSBasic() {}
 
 void OBSBasic::applicationShutdown() noexcept
 {
+	if (sourceCanvasResolutionTimer) {
+		sourceCanvasResolutionTimer->stop();
+	}
+
 	/* clear out UI event queue */
 	QApplication::sendPostedEvents(nullptr);
 #ifndef __APPLE__

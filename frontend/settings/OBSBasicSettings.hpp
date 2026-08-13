@@ -421,6 +421,7 @@ private slots:
 	void AdvOutRecCheckCodecs();
 
 	void SimpleRecordingQualityChanged();
+	void ApplySimpleRecordingPreset();
 	void SimpleRecordingEncoderChanged();
 	void SimpleRecordingQualityLosslessWarning(int idx);
 

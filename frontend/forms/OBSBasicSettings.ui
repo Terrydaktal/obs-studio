@@ -2734,6 +2734,36 @@
                         </widget>
                        </item>
                        <item row="2" column="0">
+                        <widget class="QLabel" name="simpleOutRecNVENCProfileLabel">
+                         <property name="text">
+                          <string>Basic.Settings.Output.Simple.RecordingPreset</string>
+                         </property>
+                         <property name="buddy">
+                          <cstring>simpleOutRecNVENCProfile</cstring>
+                         </property>
+                        </widget>
+                       </item>
+                       <item row="2" column="1">
+                        <widget class="QComboBox" name="simpleOutRecNVENCProfile">
+                         <property name="toolTip">
+                          <string>Basic.Settings.Output.Simple.RecordingPreset.ToolTip</string>
+                         </property>
+                        </widget>
+                       </item>
+                       <item row="3" column="0">
+                        <widget class="QLabel" name="simpleOutRecNVENCGPULabel">
+                         <property name="text">
+                          <string>Basic.Settings.Output.Simple.NVENCGPU</string>
+                         </property>
+                         <property name="buddy">
+                          <cstring>simpleOutRecNVENCGPU</cstring>
+                         </property>
+                        </widget>
+                       </item>
+                       <item row="3" column="1">
+                        <widget class="QComboBox" name="simpleOutRecNVENCGPU"/>
+                       </item>
+                       <item row="4" column="0">
                         <widget class="QLabel" name="label_26">
                          <property name="text">
                           <string>Basic.Settings.Output.Simple.RecordingQuality</string>
@@ -2743,10 +2773,10 @@
                          </property>
                         </widget>
                        </item>
-                       <item row="2" column="1">
+                       <item row="4" column="1">
                         <widget class="QComboBox" name="simpleOutRecQuality"/>
                        </item>
-                       <item row="3" column="0">
+                       <item row="5" column="0">
                         <widget class="QLabel" name="simpleOutRecFormatLabel">
                          <property name="text">
                           <string>Basic.Settings.Output.Format</string>
@@ -2756,7 +2786,7 @@
                          </property>
                         </widget>
                        </item>
-                       <item row="3" column="1">
+                       <item row="5" column="1">
                         <widget class="QComboBox" name="simpleOutRecFormat">
                          <property name="editable">
                           <bool>false</bool>
@@ -2766,7 +2796,7 @@
                          </property>
                         </widget>
                        </item>
-                       <item row="4" column="0">
+                       <item row="6" column="0">
                         <widget class="QLabel" name="simpleOutRecEncoderLabel">
                          <property name="text">
                           <string>Basic.Settings.Output.Encoder.Video</string>
@@ -2776,10 +2806,10 @@
                          </property>
                         </widget>
                        </item>
-                       <item row="4" column="1">
+                       <item row="6" column="1">
                         <widget class="QComboBox" name="simpleOutRecEncoder"/>
                        </item>
-                       <item row="5" column="0">
+                       <item row="7" column="0">
                         <widget class="QLabel" name="simpleOutRecAEncoderLabel">
                          <property name="text">
                           <string>Basic.Settings.Output.Encoder.Audio</string>
@@ -2789,17 +2819,17 @@
                          </property>
                         </widget>
                        </item>
-                       <item row="5" column="1">
+                       <item row="7" column="1">
                         <widget class="QComboBox" name="simpleOutRecAEncoder"/>
                        </item>
-                       <item row="6" column="0">
+                       <item row="8" column="0">
                         <widget class="QLabel" name="simplerectrack_label">
                          <property name="text">
                           <string>Basic.Settings.Output.Simple.RecAudioTrack</string>
                          </property>
                         </widget>
                        </item>
-                       <item row="6" column="1">
+                       <item row="8" column="1">
                         <widget class="QStackedWidget" name="simpleRecTrackWidget">
                          <property name="sizePolicy">
                           <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
@@ -3006,7 +3036,7 @@
                          </widget>
                         </widget>
                        </item>
-                       <item row="7" column="0">
+                       <item row="9" column="0">
                         <widget class="QLabel" name="label_420">
                          <property name="text">
                           <string>Basic.Settings.Output.CustomMuxerSettings</string>
@@ -3016,7 +3046,7 @@
                          </property>
                         </widget>
                        </item>
-                       <item row="7" column="1">
+                       <item row="9" column="1">
                         <widget class="QLineEdit" name="simpleOutMuxCustom"/>
                        </item>
                       </layout>
@@ -8887,6 +8917,8 @@
   <tabstop>simpleOutputPath</tabstop>
   <tabstop>simpleOutputBrowse</tabstop>
   <tabstop>simpleNoSpace</tabstop>
+  <tabstop>simpleOutRecNVENCProfile</tabstop>
+  <tabstop>simpleOutRecNVENCGPU</tabstop>
   <tabstop>simpleOutRecQuality</tabstop>
   <tabstop>simpleOutRecFormat</tabstop>
   <tabstop>simpleOutRecEncoder</tabstop>

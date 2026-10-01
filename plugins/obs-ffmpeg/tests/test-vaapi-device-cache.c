@@ -244,6 +244,16 @@ static void test_metadata(void)
 	CHECK(!obs_drm_vaapi_driver_override(OBS_DRM_VENDOR_AMD, NULL));
 }
 
+static void *concurrent_lookup(void *unused)
+{
+	(void)unused;
+	for (int i = 0; i < 20; i++) {
+		CHECK(vaapi_device_h264_supported(alias));
+		CHECK(!vaapi_device_av1_supported(paths[0]));
+	}
+	return NULL;
+}
+
 int main(void)
 {
 	CHECK(setenv("LIBVA_DRIVER_NAME", "nvidia", 1) == 0);
@@ -256,28 +266,75 @@ int main(void)
 	hwdevice_result = -123;
 	CHECK(vaapi_create_hwdevice(&reference, paths[0]) == -123);
 	CHECK(hwdevice_calls == 3);
-
-	int fd = -1;
-	VADisplay display = vaapi_open_device(&fd, alias, "driver selection test");
-	CHECK(display && fd == 11);
+	CHECK(strcmp(getenv("LIBVA_DRIVER_NAME"), "nvidia") == 0);
+	const char *saved = vaapi_get_h264_default_device();
+	CHECK(saved && strcmp(saved, paths[1]) == 0);
+	CHECK(!vaapi_get_av1_default_device());
+#ifdef ENABLE_HEVC
+	CHECK(strcmp(vaapi_get_hevc_default_device(), saved) == 0);
+	CHECK(vaapi_device_hevc_supported(alias));
+#endif
+	CHECK(vaapi_device_h264_supported(alias));
+	CHECK(!vaapi_device_h264_supported(paths[0]));
+	CHECK(!vaapi_device_av1_supported(alias));
+	CHECK(initializations[0] == 1 && initializations[1] == 1);
+	CHECK(driver_overrides[0][0] == '\0');
 	CHECK(strcmp(driver_overrides[1], "radeonsi") == 0);
-	vaapi_close_device(&fd, display);
-	CHECK(fd == -1);
+	CHECK(strcmp(getenv("LIBVA_DRIVER_NAME"), "nvidia") == 0);
+	CHECK(!vaapi_device_h264_supported(NULL));
+	CHECK(!vaapi_device_h264_supported("/missing"));
+	missing_device = true;
+	CHECK(!vaapi_device_h264_supported(alias));
+	missing_device = false;
+	CHECK(vaapi_device_h264_supported(alias));
+	CHECK(initializations[1] == 1);
 
-	display = vaapi_open_device(&fd, paths[0], "NVIDIA selection test");
-	CHECK(display && driver_overrides[0][0] == '\0');
-	vaapi_close_device(&fd, display);
+	/* Refresh keeps previously returned strings alive; replacement nodes are
+	 * detected independently of refresh. */
+	vaapi_refresh_device_cache();
+	CHECK(strcmp(vaapi_get_h264_default_device(), saved) == 0);
+	CHECK(initializations[0] == 2 && initializations[1] == 2);
+	inode_generation[1]++;
+	CHECK(vaapi_device_h264_supported(alias));
+	CHECK(initializations[1] == 3);
 
+	/* A transient initialization failure is retried after a bounded backoff. */
+	vaapi_refresh_device_cache();
+	fail_initialize = true;
+	CHECK(!vaapi_device_h264_supported(alias));
+	CHECK(initializations[1] == 4);
+	fail_initialize = false;
+	CHECK(!vaapi_device_h264_supported(alias));
+	CHECK(initializations[1] == 4);
+	now_ns += 1000000001ULL;
+	CHECK(vaapi_device_h264_supported(alias));
+	CHECK(initializations[1] == 5);
+
+	/* Failed display creation and driver selection must release the FD. */
+	int fd = -1;
 	fail_display = true;
-	CHECK(!vaapi_open_device(&fd, paths[1], "failed display test"));
+	CHECK(!vaapi_open_device(&fd, paths[1], "test"));
 	CHECK(fd == -1 && opens[1] == closes[1]);
 	fail_display = false;
 	fail_driver = true;
-	CHECK(!vaapi_open_device(&fd, paths[1], "failed driver test"));
+	CHECK(!vaapi_open_device(&fd, paths[1], "test"));
 	CHECK(fd == -1 && opens[1] == closes[1]);
 	fail_driver = false;
+
+	vaapi_refresh_device_cache();
+	unsigned before[2] = {initializations[0], initializations[1]};
+	pthread_t workers[8];
+	for (size_t i = 0; i < 8; i++)
+		CHECK(pthread_create(&workers[i], NULL, concurrent_lookup, NULL) == 0);
+	for (size_t i = 0; i < 8; i++)
+		CHECK(pthread_join(workers[i], NULL) == 0);
+	CHECK(initializations[0] == before[0] + 1 && initializations[1] == before[1] + 1);
+	CHECK(strcmp(saved, paths[1]) == 0);
+	vaapi_free_device_cache();
+	CHECK(device_cache.num == 0 && device_cache.array == NULL);
 	CHECK(opens[0] == closes[0] && opens[1] == closes[1]);
-	CHECK(strcmp(getenv("LIBVA_DRIVER_NAME"), "nvidia") == 0);
-	puts("GPU identity, per-device VA-API driver selection and cleanup checks passed");
+	CHECK(terminations[0] == initializations[0]);
+	CHECK(terminations[1] == initializations[1] + 1); /* Failed driver selection. */
+	puts("VA-API cache, device selection, recovery and concurrency checks passed");
 	return 0;
 }

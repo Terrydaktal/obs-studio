@@ -6,6 +6,8 @@
 
 #include <util/bmem.h>
 #include <util/dstr.h>
+#include <util/darray.h>
+#include <util/platform.h>
 #include <drm-helpers.h>
 
 #include <va/va_drm.h>
@@ -16,6 +18,9 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <glob.h>
+#include <limits.h>
+#include <pthread.h>
 #include <stdlib.h>
 
 static bool version_logged = false;
@@ -156,6 +161,15 @@ int vaapi_create_hwdevice(AVBufferRef **reference, const char *device_path)
 	return result;
 }
 
+enum vaapi_codec_capability {
+	VAAPI_CAP_H264 = 1 << 0,
+	VAAPI_CAP_AV1 = 1 << 1,
+	VAAPI_CAP_HEVC = 1 << 2,
+};
+
+static unsigned int vaapi_cached_capabilities(const char *device_path);
+static const char *vaapi_default_device(enum vaapi_codec_capability codec);
+
 static uint32_t vaapi_display_ep_combo_rate_controls(VAProfile profile, VAEntrypoint entrypoint, VADisplay dpy,
 						     const char *device_path)
 {
@@ -261,43 +275,12 @@ bool vaapi_display_h264_supported(VADisplay dpy, const char *device_path)
 
 bool vaapi_device_h264_supported(const char *device_path)
 {
-	bool ret = false;
-	VADisplay va_dpy;
-
-	int drm_fd = -1;
-
-	va_dpy = vaapi_open_device(&drm_fd, device_path, "vaapi_device_h264_supported");
-	if (!va_dpy)
-		return false;
-
-	ret = vaapi_display_h264_supported(va_dpy, device_path);
-
-	vaapi_close_device(&drm_fd, va_dpy);
-
-	return ret;
+	return (vaapi_cached_capabilities(device_path) & VAAPI_CAP_H264) != 0;
 }
 
-const char *vaapi_get_h264_default_device()
+const char *vaapi_get_h264_default_device(void)
 {
-	static const char *default_h264_device = NULL;
-
-	if (!default_h264_device) {
-		bool ret = false;
-		char path[32] = "/dev/dri/renderD1";
-		for (int i = 28;; i++) {
-			sprintf(path, "/dev/dri/renderD1%d", i);
-			if (access(path, F_OK) != 0)
-				break;
-
-			ret = vaapi_device_h264_supported(path);
-			if (ret) {
-				default_h264_device = strdup(path);
-				break;
-			}
-		}
-	}
-
-	return default_h264_device;
+	return vaapi_default_device(VAAPI_CAP_H264);
 }
 
 bool vaapi_display_av1_supported(VADisplay dpy, const char *device_path)
@@ -315,43 +298,12 @@ bool vaapi_display_av1_supported(VADisplay dpy, const char *device_path)
 
 bool vaapi_device_av1_supported(const char *device_path)
 {
-	bool ret = false;
-	VADisplay va_dpy;
-
-	int drm_fd = -1;
-
-	va_dpy = vaapi_open_device(&drm_fd, device_path, "vaapi_device_av1_supported");
-	if (!va_dpy)
-		return false;
-
-	ret = vaapi_display_av1_supported(va_dpy, device_path);
-
-	vaapi_close_device(&drm_fd, va_dpy);
-
-	return ret;
+	return (vaapi_cached_capabilities(device_path) & VAAPI_CAP_AV1) != 0;
 }
 
-const char *vaapi_get_av1_default_device()
+const char *vaapi_get_av1_default_device(void)
 {
-	static const char *default_av1_device = NULL;
-
-	if (!default_av1_device) {
-		bool ret = false;
-		char path[32] = "/dev/dri/renderD1";
-		for (int i = 28;; i++) {
-			sprintf(path, "/dev/dri/renderD1%d", i);
-			if (access(path, F_OK) != 0)
-				break;
-
-			ret = vaapi_device_av1_supported(path);
-			if (ret) {
-				default_av1_device = strdup(path);
-				break;
-			}
-		}
-	}
-
-	return default_av1_device;
+	return vaapi_default_device(VAAPI_CAP_AV1);
 }
 
 #ifdef ENABLE_HEVC
@@ -373,43 +325,123 @@ bool vaapi_display_hevc_supported(VADisplay dpy, const char *device_path)
 
 bool vaapi_device_hevc_supported(const char *device_path)
 {
-	bool ret = false;
-	VADisplay va_dpy;
-
-	int drm_fd = -1;
-
-	va_dpy = vaapi_open_device(&drm_fd, device_path, "vaapi_device_hevc_supported");
-	if (!va_dpy)
-		return false;
-
-	ret = vaapi_display_hevc_supported(va_dpy, device_path);
-
-	vaapi_close_device(&drm_fd, va_dpy);
-
-	return ret;
+	return (vaapi_cached_capabilities(device_path) & VAAPI_CAP_HEVC) != 0;
 }
 
-const char *vaapi_get_hevc_default_device()
+const char *vaapi_get_hevc_default_device(void)
 {
-	static const char *default_hevc_device = NULL;
-
-	if (!default_hevc_device) {
-		bool ret = false;
-		char path[32] = "/dev/dri/renderD1";
-		for (int i = 28;; i++) {
-			sprintf(path, "/dev/dri/renderD1%d", i);
-			if (access(path, F_OK) != 0)
-				break;
-
-			ret = vaapi_device_hevc_supported(path);
-			if (ret) {
-				default_hevc_device = strdup(path);
-				break;
-			}
-		}
-	}
-
-	return default_hevc_device;
+	return vaapi_default_device(VAAPI_CAP_HEVC);
 }
 
 #endif // #ifdef ENABLE_HEVC
+
+struct vaapi_device_capabilities {
+	char *path;
+	struct stat identity;
+	bool valid;
+	unsigned int codecs;
+	uint64_t retry_after;
+};
+
+static DARRAY(struct vaapi_device_capabilities) device_cache;
+static pthread_mutex_t device_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Caller holds device_cache_mutex. All three codecs share one VA display,
+// including on decode-only devices where every result is negative.
+static struct vaapi_device_capabilities *vaapi_query_device(const char *path)
+{
+	struct stat identity;
+	if (!path || stat(path, &identity) != 0 || !S_ISCHR(identity.st_mode))
+		return NULL;
+
+	char canonical[PATH_MAX];
+	if (realpath(path, canonical))
+		path = canonical;
+	struct vaapi_device_capabilities *entry = NULL;
+	for (size_t i = 0; i < device_cache.num; i++) {
+		if (strcmp(device_cache.array[i].path, path) == 0) {
+			entry = &device_cache.array[i];
+			break;
+		}
+	}
+	if (!entry) {
+		struct vaapi_device_capabilities added = {.path = bstrdup(path)};
+		size_t index = da_push_back(device_cache, &added);
+		entry = &device_cache.array[index];
+	}
+
+	const uint64_t now = os_gettime_ns();
+	if (entry->valid && entry->identity.st_dev == identity.st_dev && entry->identity.st_ino == identity.st_ino &&
+	    entry->identity.st_rdev == identity.st_rdev && entry->identity.st_ctime == identity.st_ctime &&
+	    (!entry->retry_after || now < entry->retry_after))
+		return entry;
+
+	entry->identity = identity;
+	entry->codecs = 0;
+	entry->valid = true;
+	// Suppress immediate repeat attempts, but do not cache transient init
+	// failures (permissions/device busy/driver reset) for the entire session.
+	entry->retry_after = now + 1000000000ULL;
+	int fd = -1;
+	VADisplay display = vaapi_open_device(&fd, path, "capability discovery");
+	if (!display)
+		return entry;
+	if (vaapi_display_h264_supported(display, path))
+		entry->codecs |= VAAPI_CAP_H264;
+	if (vaapi_display_av1_supported(display, path))
+		entry->codecs |= VAAPI_CAP_AV1;
+#ifdef ENABLE_HEVC
+	if (vaapi_display_hevc_supported(display, path))
+		entry->codecs |= VAAPI_CAP_HEVC;
+#endif
+	vaapi_close_device(&fd, display);
+	entry->retry_after = 0;
+	return entry;
+}
+
+static unsigned int vaapi_cached_capabilities(const char *device_path)
+{
+	pthread_mutex_lock(&device_cache_mutex);
+	struct vaapi_device_capabilities *entry = vaapi_query_device(device_path);
+	unsigned int codecs = entry ? entry->codecs : 0;
+	pthread_mutex_unlock(&device_cache_mutex);
+	return codecs;
+}
+
+static const char *vaapi_default_device(enum vaapi_codec_capability codec)
+{
+	// Enumerate actual nodes, not a contiguous sequence that stops at the
+	// first missing number after a hot-unplug. glob sorts the device paths.
+	glob_t nodes = {0};
+	const char *result = NULL;
+	if (glob("/dev/dri/renderD*", 0, NULL, &nodes) == 0) {
+		pthread_mutex_lock(&device_cache_mutex);
+		for (size_t i = 0; i < nodes.gl_pathc; i++) {
+			struct vaapi_device_capabilities *entry = vaapi_query_device(nodes.gl_pathv[i]);
+			if (entry && (entry->codecs & codec)) {
+				result = entry->path;
+				break;
+			}
+		}
+		pthread_mutex_unlock(&device_cache_mutex);
+	}
+	globfree(&nodes);
+	return result;
+}
+
+void vaapi_refresh_device_cache(void)
+{
+	pthread_mutex_lock(&device_cache_mutex);
+	for (size_t i = 0; i < device_cache.num; i++)
+		device_cache.array[i].valid = false;
+	pthread_mutex_unlock(&device_cache_mutex);
+}
+
+void vaapi_free_device_cache(void)
+{
+	pthread_mutex_lock(&device_cache_mutex);
+	for (size_t i = 0; i < device_cache.num; i++)
+		bfree(device_cache.array[i].path);
+	da_free(device_cache);
+	pthread_mutex_unlock(&device_cache_mutex);
+}

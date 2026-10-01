@@ -1021,6 +1021,9 @@ static bool vaapi_device_codec_supported(const char *path, enum codec_type codec
 
 static obs_properties_t *vaapi_properties_internal(enum codec_type codec)
 {
+	// Recheck capabilities on an explicit properties-page open, e.g. after a
+	// driver update or hotplug, while sharing probes within this refresh.
+	vaapi_refresh_device_cache();
 	obs_properties_t *props = obs_properties_create();
 	obs_property_t *list;
 
@@ -1083,7 +1086,7 @@ static obs_properties_t *vaapi_properties_internal(enum codec_type codec)
 					blog(LOG_DEBUG, "obs-ffmpeg-vaapi: A format truncation may have occurred."
 							" This can be ignored since it is quite improbable.");
 
-				if (!vaapi_device_h264_supported(path))
+				if (!vaapi_device_codec_supported(path, codec))
 					continue;
 
 				obs_property_list_add_string(list, card, path);

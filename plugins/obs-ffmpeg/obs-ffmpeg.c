@@ -418,6 +418,9 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+#ifdef LIBAVUTIL_VAAPI_AVAILABLE
+	vaapi_free_device_cache();
+#endif
 #if ENABLE_FFMPEG_LOGGING
 	obs_ffmpeg_unload_logging();
 #endif

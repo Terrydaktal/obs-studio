@@ -133,7 +133,10 @@ void OBSBasic::StartRecording()
 
 	SaveProject();
 
-	outputHandler->StartRecording();
+	recordingCpuPriority.SetRecording(true);
+	if (!outputHandler->StartRecording()) {
+		recordingCpuPriority.SetRecording(false);
+	}
 }
 
 void OBSBasic::RecordStopping()
@@ -161,6 +164,7 @@ void OBSBasic::StopRecording()
 
 void OBSBasic::RecordingStart()
 {
+	recordingCpuPriority.SetRecording(true);
 	ui->statusbar->RecordingStarted(outputHandler->fileOutput);
 	emit RecordingStarted(isRecordingPausable);
 
@@ -182,6 +186,9 @@ void OBSBasic::RecordingStart()
 
 void OBSBasic::RecordingStop(int code, QString last_error)
 {
+	// Stop has completed, including queued frames. Restore before any error
+	// dialog, and do not lower the CPU share in StopRecording/RecordStopping.
+	recordingCpuPriority.SetRecording(false);
 	ui->statusbar->RecordingStopped();
 	emit RecordingStopped();
 

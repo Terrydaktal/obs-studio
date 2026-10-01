@@ -26,6 +26,7 @@
 #include <utility/BasicOutputHandler.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
+#include <utility/RecordingCpuPriority.hpp>
 #include <utility/VCamConfig.hpp>
 #include <utility/platform.hpp>
 #include <utility/undo_stack.hpp>
@@ -683,6 +684,7 @@ private:
 	 */
 private:
 	std::unique_ptr<BasicOutputHandler> outputHandler;
+	RecordingCpuPriority recordingCpuPriority;
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 
 	int disableOutputsRef = 0;

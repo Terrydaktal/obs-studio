@@ -1474,6 +1474,7 @@ void OBSBasic::applicationShutdown() noexcept
 
 	service = nullptr;
 	outputHandler.reset();
+	recordingCpuPriority.SetRecording(false);
 
 	delete interaction;
 	delete properties;

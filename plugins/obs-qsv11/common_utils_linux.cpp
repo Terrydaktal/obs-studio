@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <dirent.h>
+#include <drm-helpers.h>
 
 #include <obs.h>
 #include <obs-encoder.h>
@@ -417,6 +418,14 @@ static void vaapi_open(const char *device_path, struct vaapi_device *device)
 	vaSetInfoCallback(display, nullptr, nullptr);
 	vaSetErrorCallback(display, nullptr, nullptr);
 
+	const char *override =
+		obs_drm_vaapi_driver_override(obs_drm_device_vendor(device_path), getenv("LIBVA_DRIVER_NAME"));
+	if (override && vaSetDriverName(display, const_cast<char *>(override)) != VA_STATUS_SUCCESS) {
+		vaTerminate(display);
+		close(fd);
+		return;
+	}
+
 	int major;
 	int minor;
 	if (vaInitialize(display, &major, &minor) != VA_STATUS_SUCCESS) {
@@ -484,9 +493,15 @@ static bool vaapi_supports_hevc(VADisplay display)
 
 bool check_adapter(void *param, const char *node, uint32_t idx)
 {
-	struct vaapi_device device = {0};
 	struct adapter_info *adapters = (struct adapter_info *)param;
+	adapters[idx] = {};
+	const uint16_t vendor = obs_drm_device_vendor(node);
+	if (!obs_drm_may_support_qsv(vendor)) {
+		blog(LOG_DEBUG, "QSV: Skipping non-Intel device %s (PCI vendor %04x)", node, vendor);
+		return true;
+	}
 
+	struct vaapi_device device = {0};
 	vaapi_open(node, &device);
 	if (!device.display) {
 		return true;

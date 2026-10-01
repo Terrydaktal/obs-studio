@@ -5,11 +5,13 @@
 #pragma once
 
 #include <util/base.h>
+#include <libavutil/buffer.h>
 
 #include <va/va.h>
 
 VADisplay vaapi_open_device(int *fd, const char *device_path, const char *func_name);
 void vaapi_close_device(int *fd, VADisplay dpy);
+int vaapi_create_hwdevice(AVBufferRef **reference, const char *device_path);
 
 bool vaapi_device_rc_supported(VAProfile profile, VADisplay dpy, uint32_t rc, const char *device_path);
 bool vaapi_device_bframe_supported(VAProfile profile, VADisplay dpy);

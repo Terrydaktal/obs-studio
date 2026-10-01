@@ -380,9 +380,8 @@ bool obs_module_load(void)
 
 #ifdef LIBAVUTIL_VAAPI_AVAILABLE
 	const char *libva_env = getenv("LIBVA_DRIVER_NAME");
-	if (!!libva_env)
-		blog(LOG_WARNING, "LIBVA_DRIVER_NAME variable is set,"
-				  " this could prevent FFmpeg VAAPI from working correctly");
+	if (libva_env)
+		blog(LOG_INFO, "VAAPI: LIBVA_DRIVER_NAME=%s; device-specific overrides may take precedence", libva_env);
 
 	if (h264_vaapi_supported()) {
 		blog(LOG_INFO, "FFmpeg VAAPI H264 encoding supported");

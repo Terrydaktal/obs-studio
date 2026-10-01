@@ -42,6 +42,7 @@ target_sources(
 )
 
 target_compile_options(obs-ffmpeg PRIVATE $<$<COMPILE_LANG_AND_ID:C,AppleClang,Clang>:-Wno-shorten-64-to-32>)
+target_include_directories(obs-ffmpeg PRIVATE "${CMAKE_SOURCE_DIR}/shared/obs-drm-helpers")
 target_compile_definitions(
   obs-ffmpeg
   PRIVATE

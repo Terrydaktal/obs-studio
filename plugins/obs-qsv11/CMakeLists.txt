@@ -14,6 +14,8 @@ find_package(VPL 2.9 REQUIRED)
 
 if(OS_LINUX)
   find_package(Libva REQUIRED)
+  find_package(Libdrm REQUIRED)
+  target_include_directories(obs-qsv11 PRIVATE "${CMAKE_SOURCE_DIR}/shared/obs-drm-helpers")
 endif()
 
 target_sources(
@@ -47,6 +49,7 @@ target_link_libraries(
     VPL::VPL
     $<$<PLATFORM_ID:Linux>:Libva::va>
     $<$<PLATFORM_ID:Linux>:Libva::drm>
+    $<$<PLATFORM_ID:Linux>:Libdrm::Libdrm>
     $<$<PLATFORM_ID:Windows>:d3d11>
     $<$<PLATFORM_ID:Windows>:dxgi>
     $<$<PLATFORM_ID:Windows>:dxguid>

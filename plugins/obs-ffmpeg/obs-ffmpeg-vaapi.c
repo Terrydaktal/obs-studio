@@ -144,7 +144,7 @@ static bool vaapi_init_codec(struct vaapi_encoder *enc, const char *path)
 {
 	int ret;
 
-	ret = av_hwdevice_ctx_create(&enc->vadevice_ref, AV_HWDEVICE_TYPE_VAAPI, path, NULL, 0);
+	ret = vaapi_create_hwdevice(&enc->vadevice_ref, path);
 	if (ret < 0) {
 		warn("Failed to create VAAPI device context: %s", av_err2str(ret));
 		return false;

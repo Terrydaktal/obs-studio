@@ -6,13 +6,17 @@
 
 #include <util/bmem.h>
 #include <util/dstr.h>
+#include <drm-helpers.h>
 
 #include <va/va_drm.h>
 #include <va/va_str.h>
+#include <libavutil/dict.h>
+#include <libavutil/hwcontext.h>
 
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdlib.h>
 
 static bool version_logged = false;
 
@@ -33,6 +37,8 @@ inline static VADisplay vaapi_open_display_drm(int *fd, const char *device_path)
 
 	if (!va_dpy) {
 		blog(LOG_ERROR, "VAAPI: Failed to initialize DRM display");
+		close(*fd);
+		*fd = -1;
 		return NULL;
 	}
 
@@ -92,6 +98,21 @@ VADisplay vaapi_open_device(int *fd, const char *device_path, const char *func_n
 	vaSetInfoCallback(va_dpy, vaapi_log_info_cb, NULL);
 	vaSetErrorCallback(va_dpy, vaapi_log_error_cb, NULL);
 
+	const char *override =
+		obs_drm_vaapi_driver_override(obs_drm_device_vendor(device_path), getenv("LIBVA_DRIVER_NAME"));
+	if (override) {
+		va_status = vaSetDriverName(va_dpy, (char *) override);
+		if (va_status != VA_STATUS_SUCCESS) {
+			blog(LOG_ERROR, "VAAPI: Could not select device-specific driver %s for %s", override,
+			     device_path);
+			vaapi_close_device(fd, va_dpy);
+			return NULL;
+		}
+		blog(LOG_DEBUG,
+		     "VAAPI: Using device-specific driver %s for %s instead of incompatible LIBVA_DRIVER_NAME=nvidia",
+		     override, device_path);
+	}
+
 	va_status = vaInitialize(va_dpy, &major, &minor);
 
 	if (va_status != VA_STATUS_SUCCESS) {
@@ -116,8 +137,23 @@ VADisplay vaapi_open_device(int *fd, const char *device_path, const char *func_n
 
 void vaapi_close_device(int *fd, VADisplay dpy)
 {
-	vaTerminate(dpy);
+	if (dpy)
+		vaTerminate(dpy);
 	vaapi_close_display_drm(fd);
+}
+
+int vaapi_create_hwdevice(AVBufferRef **reference, const char *device_path)
+{
+	// FFmpeg creates its own display. Apply the same per-device choice used
+	// during discovery so a detected encoder can actually initialize too.
+	const char *override =
+		obs_drm_vaapi_driver_override(obs_drm_device_vendor(device_path), getenv("LIBVA_DRIVER_NAME"));
+	AVDictionary *options = NULL;
+	int result = override ? av_dict_set(&options, "driver", override, 0) : 0;
+	if (result >= 0)
+		result = av_hwdevice_ctx_create(reference, AV_HWDEVICE_TYPE_VAAPI, device_path, options, 0);
+	av_dict_free(&options);
+	return result;
 }
 
 static uint32_t vaapi_display_ep_combo_rate_controls(VAProfile profile, VAEntrypoint entrypoint, VADisplay dpy,

@@ -25,6 +25,8 @@ struct ffmpeg_video_encoder {
 	AVCodecContext *context;
 	int64_t start_ts;
 	bool first_packet;
+	bool allow_delayed_output;
+	bool delay_warned;
 
 	AVFrame *vframe;
 

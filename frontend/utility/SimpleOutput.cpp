@@ -15,11 +15,9 @@ using namespace std;
 static constexpr int AV1_RECORDING_KEYFRAME_INTERVAL_SEC = 60;
 /* Match the old automatic-lookahead CRF 50 quality after bounding lookahead. */
 static constexpr int SVT_AV1_RECORDING_CRF = 45;
-/* SVT's automatic lookahead can buffer roughly four seconds of 30 FPS
- * video before the random-access mini-GOP delay is counted.  OBS measures
- * that intentional delay as encoder backlog and aborts at five seconds.
- * Sixteen frames preserves nearly all of preset 5's compression while
- * keeping the total pipeline comfortably below the timeout. */
+/* Bound lookahead to keep recording stop latency and memory use reasonable.
+ * Startup/keyframe work can still push output past the stock five-second
+ * timeout, so the recording encoder uses a warning-only delay policy. */
 static constexpr const char *SVT_AV1_RECORDING_OPTIONS = "svtav1-params=tune=0:lp=6:lookahead=16";
 
 static bool CreateSimpleAACEncoder(OBSEncoder &res, int bitrate, const char *name, size_t idx)
@@ -133,6 +131,7 @@ void SimpleOutput::LoadRecordingPreset_Lossy(const char *encoderId)
 		obs_data_set_int(settings, "lp", 6);
 		obs_data_set_int(settings, "keyint_sec", AV1_RECORDING_KEYFRAME_INTERVAL_SEC);
 		obs_data_set_string(settings, "ffmpeg_opts", SVT_AV1_RECORDING_OPTIONS);
+		obs_data_set_bool(settings, "allow_delayed_output", true);
 	}
 
 	videoRecording = obs_video_encoder_create(encoderId, "simple_video_recording", settings, nullptr);
@@ -634,6 +633,7 @@ void SimpleOutput::UpdateRecordingSettings_svt_av1()
 	obs_data_set_int(settings, "lp", 6);
 	obs_data_set_int(settings, "keyint_sec", AV1_RECORDING_KEYFRAME_INTERVAL_SEC);
 	obs_data_set_string(settings, "ffmpeg_opts", SVT_AV1_RECORDING_OPTIONS);
+	obs_data_set_bool(settings, "allow_delayed_output", true);
 	obs_encoder_update(videoRecording, settings);
 }
 

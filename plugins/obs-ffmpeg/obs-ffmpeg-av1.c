@@ -72,6 +72,7 @@ static bool av1_update(struct av1_encoder *enc, obs_data_t *settings)
 	int preset = (int)obs_data_get_int(settings, "preset");
 	int tune = (int)obs_data_get_int(settings, "tune");
 	int lp = (int)obs_data_get_int(settings, "lp");
+	enc->ffve.allow_delayed_output = obs_data_get_bool(settings, "allow_delayed_output");
 	AVDictionary *svtav1_opts = NULL;
 
 	video_t *video = obs_encoder_video(enc->ffve.encoder);
@@ -150,11 +151,13 @@ static bool av1_update(struct av1_encoder *enc, obs_data_t *settings)
 	     "\tpreset:       %d\n"
 	     "\ttune:         %d\n"
 	     "\tlp:           %d\n"
+	     "\tdelay policy: %s\n"
 	     "\twidth:        %d\n"
 	     "\theight:       %d\n"
 	     "\tffmpeg opts:  %s\n",
 	     enc->ffve.enc_name, rc, bitrate, cqp, enc->ffve.context->gop_size, preset, tune, lp,
-	     enc->ffve.context->width, enc->ffve.height, ffmpeg_opts);
+	     enc->ffve.allow_delayed_output ? "warn and continue" : "abort after 5 seconds", enc->ffve.context->width,
+	     enc->ffve.height, ffmpeg_opts);
 
 	enc->ffve.context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 	return ffmpeg_video_encoder_init_codec(&enc->ffve);

@@ -84,3 +84,7 @@ if(OS_WINDOWS)
 endif()
 
 set_target_properties_obs(obs-ffmpeg PROPERTIES FOLDER plugins/obs-ffmpeg PREFIX "")
+
+if(ENABLE_UNIT_TESTS)
+  add_subdirectory(tests)
+endif()

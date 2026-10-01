@@ -254,7 +254,23 @@ bool ffmpeg_video_encode(struct ffmpeg_video_encoder *enc, struct encoder_frame 
 		debug("cur: %lld, packet: %lld, diff: %lld", cur_ts,
 		      recv_ts_nsec, cur_ts - recv_ts_nsec);
 #endif
-		if ((cur_ts - recv_ts_nsec - pause_offset) > TIMEOUT_MAX_NSEC) {
+		const int64_t delay_nsec = cur_ts - recv_ts_nsec - pause_offset;
+		if (enc->allow_delayed_output) {
+			/* A recording can tolerate encoder latency. Keep delivering
+			 * packets so normal Stop can reach its requested timestamp;
+			 * returning false here force-stops and loses the queued tail.
+			 * This does not add a queue or change the encoder's limits. */
+			if (delay_nsec > TIMEOUT_MAX_NSEC && !enc->delay_warned) {
+				warn("Encoder output is %.2f seconds behind; continuing recording. "
+				     "Stopping may take longer while buffered frames are encoded.",
+				     (double)delay_nsec / SEC_TO_NSEC);
+				enc->delay_warned = true;
+			} else if (delay_nsec <= TIMEOUT_MAX_NSEC / 2 && enc->delay_warned) {
+				info("Encoder output delay recovered to %.2f seconds",
+				     (double)delay_nsec / SEC_TO_NSEC);
+				enc->delay_warned = false;
+			}
+		} else if (delay_nsec > TIMEOUT_MAX_NSEC) {
 			char timeout_str[16];
 			snprintf(timeout_str, sizeof(timeout_str), "%d", TIMEOUT_MAX_SEC);
 

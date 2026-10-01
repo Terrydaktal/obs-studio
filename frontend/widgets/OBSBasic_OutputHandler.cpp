@@ -22,8 +22,10 @@
 #include <qt-wrappers.hpp>
 
 #include <QDir>
+#include <QMenu>
 #include <QScopedValueRollback>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -63,6 +65,35 @@ static bool GetSourceCanvasDimensions(obs_sceneitem_t *item, SourceCanvasDimensi
 	dimensions.visibleWidth = uint32_t(visibleWidth);
 	dimensions.visibleHeight = uint32_t(visibleHeight);
 	return true;
+}
+
+static bool CollectCanvasFitSources(obs_scene_t *, obs_sceneitem_t *item, void *data)
+{
+	if (obs_sceneitem_is_group(item)) {
+		obs_scene_enum_items(obs_sceneitem_group_get_scene(item), CollectCanvasFitSources, data);
+	} else {
+		SourceCanvasDimensions dimensions;
+		if (GetSourceCanvasDimensions(item, dimensions)) {
+			static_cast<std::vector<OBSSceneItem> *>(data)->emplace_back(item);
+		}
+	}
+	return true;
+}
+
+static std::vector<OBSSceneItem> GetCanvasFitSources(obs_scene_t *scene)
+{
+	std::vector<OBSSceneItem> items;
+	if (scene) {
+		obs_scene_enum_items(scene, CollectCanvasFitSources, &items);
+	}
+	return items;
+}
+
+static bool SceneContainsCanvasFitSource(obs_scene_t *scene, obs_sceneitem_t *item)
+{
+	const auto items = GetCanvasFitSources(scene);
+	return std::any_of(items.begin(), items.end(),
+			   [item](const OBSSceneItem &candidate) { return candidate.Get() == item; });
 }
 
 static void SetSourceTransformOneToOne(obs_sceneitem_t *item)
@@ -133,7 +164,8 @@ OBSSceneItem OBSBasic::GetCanvasFitSource()
 		}
 	}
 
-	return {};
+	const auto items = GetCanvasFitSources(GetCurrentScene());
+	return items.size() == 1 ? items.front() : OBSSceneItem{};
 }
 
 bool OBSBasic::CanResizeCanvasToSource()
@@ -142,7 +174,7 @@ bool OBSBasic::CanResizeCanvasToSource()
 		return false;
 	}
 
-	return bool(GetCanvasFitSource());
+	return !GetCanvasFitSources(GetCurrentScene()).empty();
 }
 
 bool OBSBasic::ResizeCanvasToSource()
@@ -151,15 +183,37 @@ bool OBSBasic::ResizeCanvasToSource()
 		return false;
 	}
 
-	// Retain the scene and selected item while the confirmation dialog runs.
-	// Revalidate selection, dimensions and output state before changing video.
+	// Retain the scene and explicit target across menus/dialogs. Selection is
+	// optional and may change without replacing the source named in the prompt.
 	OBSScene scene = GetCurrentScene();
 	OBSSceneItem item = GetCanvasFitSource();
 	QScopedValueRollback<bool> resizeGuard(sourceCanvasResizeInProgress, true);
 	UpdateSourceCanvasResolution();
+	if (!item) {
+		const auto items = GetCanvasFitSources(scene);
+		QMenu sources(this);
+		for (size_t i = 0; i < items.size(); i++) {
+			SourceCanvasDimensions candidate;
+			if (!GetSourceCanvasDimensions(items[i], candidate)) {
+				continue;
+			}
+			QAction *action = sources.addAction(QStringLiteral("%1 (%2 × %3)")
+								    .arg(QT_UTF8(obs_source_get_name(candidate.source)))
+								    .arg(candidate.visibleWidth)
+								    .arg(candidate.visibleHeight));
+			action->setData(qulonglong(i));
+		}
+		QAction *chosen = sources.exec(
+			ui->fitCanvasToSourceButton->mapToGlobal(ui->fitCanvasToSourceButton->rect().bottomLeft()));
+		if (!chosen) {
+			return false;
+		}
+		item = items.at(chosen->data().toULongLong());
+	}
+
 	SourceCanvasDimensions dimensions;
 	if (isClosing_ || obs_video_active() || GetCurrentScene() != scene ||
-	    GetCanvasFitSource() != item || !GetSourceCanvasDimensions(item, dimensions)) {
+	    !SceneContainsCanvasFitSource(scene, item) || !GetSourceCanvasDimensions(item, dimensions)) {
 		return false;
 	}
 
@@ -182,7 +236,7 @@ bool OBSBasic::ResizeCanvasToSource()
 
 	SourceCanvasDimensions currentDimensions;
 	if (isClosing_ || obs_video_active() || GetCurrentScene() != scene ||
-	    GetCanvasFitSource() != item || !GetSourceCanvasDimensions(item, currentDimensions) ||
+	    !SceneContainsCanvasFitSource(scene, item) || !GetSourceCanvasDimensions(item, currentDimensions) ||
 	    currentDimensions.visibleWidth != dimensions.visibleWidth ||
 	    currentDimensions.visibleHeight != dimensions.visibleHeight) {
 		blog(LOG_WARNING, "Canvas fit cancelled: source or output changed while confirming");

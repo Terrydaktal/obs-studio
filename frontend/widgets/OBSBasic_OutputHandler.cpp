@@ -22,6 +22,7 @@
 #include <qt-wrappers.hpp>
 
 #include <QDir>
+#include <QScopedValueRollback>
 
 #include <cmath>
 
@@ -117,44 +118,87 @@ bool OBSBasic::Active() const
 
 void OBSBasic::ResizeOutputSizeOfSource()
 {
-	ResizeCanvasToSelectedSource(true);
+	ResizeCanvasToSource();
+	UpdateSourceCanvasResolution();
 }
 
-bool OBSBasic::ResizeCanvasToSelectedSource(bool confirm)
+OBSSceneItem OBSBasic::GetCanvasFitSource()
 {
-	if (obs_video_active() || sourceCanvasResizeInProgress) {
-		return false;
-	}
-
-	SourceCanvasDimensions dimensions;
-	if (!GetSourceCanvasDimensions(GetCurrentSceneItem(), dimensions)) {
-		return false;
-	}
-
-	if (confirm) {
-		QMessageBox resize_output(this);
-		resize_output.setText(QTStr("ResizeOutputSizeOfSource.Text") + "\n\n" +
-				      QTStr("ResizeOutputSizeOfSource.Continue"));
-		QAbstractButton *Yes = resize_output.addButton(QTStr("Yes"), QMessageBox::YesRole);
-		resize_output.addButton(QTStr("No"), QMessageBox::NoRole);
-		resize_output.setIcon(QMessageBox::Warning);
-		resize_output.setWindowTitle(QTStr("ResizeOutputSizeOfSource"));
-		resize_output.exec();
-
-		if (resize_output.clickedButton() != Yes) {
-			return false;
+	const auto selectionModel = ui->sources->selectionModel();
+	if (selectionModel && selectionModel->selectedIndexes().count() == 1) {
+		OBSSceneItem selected = GetCurrentSceneItem();
+		SourceCanvasDimensions dimensions;
+		if (GetSourceCanvasDimensions(selected, dimensions)) {
+			return selected;
 		}
+	}
+
+	return {};
+}
+
+bool OBSBasic::CanResizeCanvasToSource()
+{
+	if (!loaded || isClosing_ || obs_video_active() || sourceCanvasResizeInProgress) {
+		return false;
+	}
+
+	return bool(GetCanvasFitSource());
+}
+
+bool OBSBasic::ResizeCanvasToSource()
+{
+	if (!CanResizeCanvasToSource()) {
+		return false;
+	}
+
+	// Retain the scene and selected item while the confirmation dialog runs.
+	// Revalidate selection, dimensions and output state before changing video.
+	OBSScene scene = GetCurrentScene();
+	OBSSceneItem item = GetCanvasFitSource();
+	QScopedValueRollback<bool> resizeGuard(sourceCanvasResizeInProgress, true);
+	UpdateSourceCanvasResolution();
+	SourceCanvasDimensions dimensions;
+	if (isClosing_ || obs_video_active() || GetCurrentScene() != scene ||
+	    GetCanvasFitSource() != item || !GetSourceCanvasDimensions(item, dimensions)) {
+		return false;
+	}
+
+	QMessageBox resize_output(this);
+	resize_output.setTextFormat(Qt::PlainText);
+	resize_output.setText(QTStr("ResizeOutputSizeOfSource.Text")
+				      .arg(QT_UTF8(obs_source_get_name(dimensions.source)))
+				      .arg(dimensions.visibleWidth)
+				      .arg(dimensions.visibleHeight) +
+			      "\n\n" + QTStr("ResizeOutputSizeOfSource.Continue"));
+	QAbstractButton *Yes = resize_output.addButton(QTStr("Yes"), QMessageBox::YesRole);
+	resize_output.addButton(QTStr("No"), QMessageBox::NoRole);
+	resize_output.setIcon(QMessageBox::Warning);
+	resize_output.setWindowTitle(QTStr("ResizeOutputSizeOfSource"));
+	resize_output.exec();
+
+	if (resize_output.clickedButton() != Yes) {
+		return false;
+	}
+
+	SourceCanvasDimensions currentDimensions;
+	if (isClosing_ || obs_video_active() || GetCurrentScene() != scene ||
+	    GetCanvasFitSource() != item || !GetSourceCanvasDimensions(item, currentDimensions) ||
+	    currentDimensions.visibleWidth != dimensions.visibleWidth ||
+	    currentDimensions.visibleHeight != dimensions.visibleHeight) {
+		blog(LOG_WARNING, "Canvas fit cancelled: source or output changed while confirming");
+		QMessageBox::information(this, QTStr("ResizeOutputSizeOfSource"),
+					 QTStr("ResizeOutputSizeOfSource.Changed"));
+		return false;
 	}
 
 	const uint32_t oldBaseWidth = config_get_uint(activeConfiguration, "Video", "BaseCX");
 	const uint32_t oldBaseHeight = config_get_uint(activeConfiguration, "Video", "BaseCY");
 	const uint32_t oldOutputWidth = config_get_uint(activeConfiguration, "Video", "OutputCX");
 	const uint32_t oldOutputHeight = config_get_uint(activeConfiguration, "Video", "OutputCY");
-	const bool resolutionChanged = oldBaseWidth != dimensions.visibleWidth || oldBaseHeight != dimensions.visibleHeight ||
-				       oldOutputWidth != dimensions.visibleWidth ||
-				       oldOutputHeight != dimensions.visibleHeight;
+	const bool resolutionChanged =
+		oldBaseWidth != dimensions.visibleWidth || oldBaseHeight != dimensions.visibleHeight ||
+		oldOutputWidth != dimensions.visibleWidth || oldOutputHeight != dimensions.visibleHeight;
 
-	sourceCanvasResizeInProgress = true;
 	if (resolutionChanged) {
 		config_set_uint(activeConfiguration, "Video", "BaseCX", dimensions.visibleWidth);
 		config_set_uint(activeConfiguration, "Video", "BaseCY", dimensions.visibleHeight);
@@ -168,8 +212,7 @@ bool OBSBasic::ResizeCanvasToSelectedSource(bool confirm)
 			config_set_uint(activeConfiguration, "Video", "OutputCX", oldOutputWidth);
 			config_set_uint(activeConfiguration, "Video", "OutputCY", oldOutputHeight);
 			ResetVideo();
-			sourceCanvasResizeInProgress = false;
-			blog(LOG_ERROR, "Failed to automatically resize the canvas to source '%s' (%ux%u), error %d",
+			blog(LOG_ERROR, "Failed to fit the canvas to source '%s' (%ux%u), error %d",
 			     obs_source_get_name(dimensions.source), dimensions.visibleWidth, dimensions.visibleHeight,
 			     resetResult);
 			return false;
@@ -180,9 +223,8 @@ bool OBSBasic::ResizeCanvasToSelectedSource(bool confirm)
 	SetSourceTransformOneToOne(dimensions.item);
 	activeConfiguration.SaveSafe("tmp");
 	SaveProject();
-	sourceCanvasResizeInProgress = false;
 
-	blog(LOG_INFO, "Canvas and output automatically matched source '%s' at %ux%u (native %ux%u)",
+	blog(LOG_INFO, "Canvas and output explicitly fitted to source '%s' at %ux%u (native %ux%u)",
 	     obs_source_get_name(dimensions.source), dimensions.visibleWidth, dimensions.visibleHeight,
 	     dimensions.nativeWidth, dimensions.nativeHeight);
 	return true;
@@ -194,16 +236,24 @@ void OBSBasic::UpdateSourceCanvasResolution()
 		return;
 	}
 
+	// This observer is read-only: selecting a source or waiting for PipeWire
+	// must never change the canvas or the composition of a multi-source scene.
+	ui->fitCanvasToSourceButton->setEnabled(CanResizeCanvasToSource());
+	ui->fitCanvasToSourceButton->setToolTip(QTStr(obs_video_active() ? "ResizeOutputSizeOfSource.Active"
+						      : ui->fitCanvasToSourceButton->isEnabled()
+							      ? "ResizeOutputSizeOfSource.ToolTip"
+							      : "ResizeOutputSizeOfSource.NoSource"));
+
 	obs_video_info videoInfo = {};
 	const bool haveVideoInfo = obs_get_video_info(&videoInfo);
 	const uint32_t canvasWidth = haveVideoInfo ? videoInfo.base_width
-						 : config_get_uint(activeConfiguration, "Video", "BaseCX");
+						   : config_get_uint(activeConfiguration, "Video", "BaseCX");
 	const uint32_t canvasHeight = haveVideoInfo ? videoInfo.base_height
-						  : config_get_uint(activeConfiguration, "Video", "BaseCY");
+						    : config_get_uint(activeConfiguration, "Video", "BaseCY");
 	const uint32_t outputWidth = haveVideoInfo ? videoInfo.output_width
-						 : config_get_uint(activeConfiguration, "Video", "OutputCX");
+						   : config_get_uint(activeConfiguration, "Video", "OutputCX");
 	const uint32_t outputHeight = haveVideoInfo ? videoInfo.output_height
-						  : config_get_uint(activeConfiguration, "Video", "OutputCY");
+						    : config_get_uint(activeConfiguration, "Video", "OutputCY");
 
 	QItemSelectionModel *selectionModel = ui->sources->selectionModel();
 	if (!selectionModel) {
@@ -213,35 +263,32 @@ void OBSBasic::UpdateSourceCanvasResolution()
 
 	if (sourceCanvasSelectionModel != selectionModel) {
 		sourceCanvasSelectionModel = selectionModel;
-		connect(selectionModel, &QItemSelectionModel::selectionChanged, this, [this]() {
-			sourceCanvasPendingKey.clear();
-			sourceCanvasAppliedKey.clear();
-			sourceCanvasStableTicks = 0;
-			UpdateSourceCanvasResolution();
-		});
+		connect(selectionModel, &QItemSelectionModel::selectionChanged, this,
+			&OBSBasic::UpdateSourceCanvasResolution);
 	}
 
 	const QModelIndexList selectedItems = selectionModel->selectedIndexes();
-	if (selectedItems.count() != 1) {
-		ui->sourceCanvasResolutionLabel->setText(
-			QTStr(selectedItems.empty() ? "Basic.SourceCanvasResolution.None" :
-						      "Basic.SourceCanvasResolution.Multiple")
-				.arg(canvasWidth)
-				.arg(canvasHeight)
-				.arg(outputWidth)
-				.arg(outputHeight));
-		sourceCanvasPendingKey.clear();
-		sourceCanvasStableTicks = 0;
+	OBSSceneItem fitSource = GetCanvasFitSource();
+	if (!fitSource && selectedItems.count() != 1) {
+		ui->sourceCanvasResolutionLabel->setText(QTStr(selectedItems.empty()
+								       ? "Basic.SourceCanvasResolution.None"
+								       : "Basic.SourceCanvasResolution.Multiple")
+								 .arg(canvasWidth)
+								 .arg(canvasHeight)
+								 .arg(outputWidth)
+								 .arg(outputHeight));
+		ui->sourceCanvasResolutionLabel->setToolTip(ui->sourceCanvasResolutionLabel->text());
 		return;
 	}
 
 	SourceCanvasDimensions dimensions;
-	if (!GetSourceCanvasDimensions(GetCurrentSceneItem(), dimensions)) {
+	if (!GetSourceCanvasDimensions(fitSource, dimensions)) {
 		ui->sourceCanvasResolutionLabel->setText(QTStr("Basic.SourceCanvasResolution.Waiting")
-							 .arg(canvasWidth)
-							 .arg(canvasHeight)
-							 .arg(outputWidth)
-							 .arg(outputHeight));
+								 .arg(canvasWidth)
+								 .arg(canvasHeight)
+								 .arg(outputWidth)
+								 .arg(outputHeight));
+		ui->sourceCanvasResolutionLabel->setToolTip(ui->sourceCanvasResolutionLabel->text());
 		return;
 	}
 
@@ -256,7 +303,8 @@ void OBSBasic::UpdateSourceCanvasResolution()
 	const uint32_t alignedOutputWidth = dimensions.visibleWidth & ~uint32_t(3);
 	const uint32_t alignedOutputHeight = dimensions.visibleHeight & ~uint32_t(1);
 	const bool outputMatches = outputWidth == alignedOutputWidth && outputHeight == alignedOutputHeight;
-	const bool cropped = dimensions.crop.left || dimensions.crop.right || dimensions.crop.top || dimensions.crop.bottom;
+	const bool cropped = dimensions.crop.left || dimensions.crop.right || dimensions.crop.top ||
+			     dimensions.crop.bottom;
 	QString sourceLine;
 	if (cropped) {
 		sourceLine = QTStr("Basic.SourceCanvasResolution.SourceCropped")
@@ -276,7 +324,7 @@ void OBSBasic::UpdateSourceCanvasResolution()
 	} else if (obs_video_active()) {
 		status = QTStr("Basic.SourceCanvasResolution.Active");
 	} else {
-		status = QTStr("Basic.SourceCanvasResolution.Adjusting");
+		status = QTStr("Basic.SourceCanvasResolution.Mismatch");
 	}
 
 	QString details = QTStr("Basic.SourceCanvasResolution.Details")
@@ -289,36 +337,7 @@ void OBSBasic::UpdateSourceCanvasResolution()
 		details += QStringLiteral(" — ") + status;
 	}
 	ui->sourceCanvasResolutionLabel->setText(details);
-
-	const std::string key = std::string(obs_source_get_uuid(dimensions.source)) + ":" +
-				std::to_string(obs_sceneitem_get_id(dimensions.item)) + ":" +
-				std::to_string(dimensions.visibleWidth) + "x" + std::to_string(dimensions.visibleHeight) + ":" +
-				std::to_string(dimensions.crop.left) + "," + std::to_string(dimensions.crop.top) + "," +
-				std::to_string(dimensions.crop.right) + "," + std::to_string(dimensions.crop.bottom);
-
-	if (key != sourceCanvasPendingKey) {
-		sourceCanvasPendingKey = key;
-		sourceCanvasStableTicks = 0;
-		return;
-	}
-
-	if (canvasMatches && outputMatches && oneToOne) {
-		sourceCanvasAppliedKey = key;
-		return;
-	}
-
-	if (key == sourceCanvasAppliedKey || sourceCanvasResizeInProgress) {
-		return;
-	}
-
-	if (++sourceCanvasStableTicks < 2 || obs_video_active()) {
-		return;
-	}
-
-	// Mark the exact source/size before applying it.  The next UI refresh is
-	// timer-driven; never recurse synchronously through a video reset.
-	sourceCanvasAppliedKey = key;
-	ResizeCanvasToSelectedSource(false);
+	ui->sourceCanvasResolutionLabel->setToolTip(details);
 }
 
 const char *OBSBasic::GetCurrentOutputPath()

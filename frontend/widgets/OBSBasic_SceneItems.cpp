@@ -703,15 +703,8 @@ void OBSBasic::CreateSourcePopupMenu(int idx, bool preview)
 
 			QAction *resizeOutput = popup.addAction(QTStr("ResizeOutputSizeOfSource"), this,
 								&OBSBasic::ResizeOutputSizeOfSource);
-
-			int width = obs_source_get_width(source);
-			int height = obs_source_get_height(source);
-
-			resizeOutput->setEnabled(!obs_video_active());
-
-			if (width < 32 || height < 32) {
-				resizeOutput->setEnabled(false);
-			}
+			resizeOutput->setEnabled(CanResizeCanvasToSource());
+			resizeOutput->setToolTip(QTStr("ResizeOutputSizeOfSource.ToolTip"));
 		}
 
 		popup.addSeparator();

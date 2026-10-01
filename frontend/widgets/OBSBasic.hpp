@@ -789,12 +789,11 @@ private slots:
 	void UpdateSourceCanvasResolution();
 
 private:
-	bool ResizeCanvasToSelectedSource(bool confirm);
+	OBSSceneItem GetCanvasFitSource();
+	bool CanResizeCanvasToSource();
+	bool ResizeCanvasToSource();
 	QPointer<QTimer> sourceCanvasResolutionTimer;
 	QPointer<QItemSelectionModel> sourceCanvasSelectionModel;
-	std::string sourceCanvasPendingKey;
-	std::string sourceCanvasAppliedKey;
-	int sourceCanvasStableTicks = 0;
 	bool sourceCanvasResizeInProgress = false;
 
 private slots:
